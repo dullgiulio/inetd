@@ -1,8 +1,11 @@
 package inetd
 
 import (
+	"bufio"
+	"errors"
 	"io"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -18,67 +21,87 @@ func (a *Addr) String() string {
 	return string(*a)
 }
 
-type Client struct {
-	in         io.ReadCloser
+type IOClient struct {
+	in         *bufio.Reader
+	fin        io.ReadCloser
 	out        io.WriteCloser
 	remoteAddr net.Addr
 	localAddr  net.Addr
 }
 
-func NewClient(in io.ReadCloser, out io.WriteCloser) *Client {
+func NewIOClient(in io.ReadCloser, out io.WriteCloser) *IOClient {
 	var local = Addr("127.0.0.1")
-	return &Client{
-		in:         in,
+	return &IOClient{
+		in:         bufio.NewReader(in),
+		fin:        in,
 		out:        out,
 		remoteAddr: &local,
 		localAddr:  &local,
 	}
 }
 
-func (c *Client) Read(buf []byte) (n int, err error) {
+func (c *IOClient) Read(buf []byte) (n int, err error) {
 	return c.in.Read(buf)
 }
 
-func (c *Client) Write(buf []byte) (n int, err error) {
+func (c *IOClient) Write(buf []byte) (n int, err error) {
 	return c.out.Write(buf)
 }
 
-func (c *Client) Close() error {
-	errIn := c.in.Close()
-	if err := c.out.Close(); err != nil {
-		return err
+func (c *IOClient) Close() error {
+	var err error
+	if errIn := c.fin.Close(); err == nil {
+		err = errIn
 	}
-	return errIn
+	if errClose := c.out.Close(); err == nil {
+		err = errClose
+	}
+	return err
 }
 
-func (c *Client) LocalAddr() net.Addr {
+func (c *IOClient) LocalAddr() net.Addr {
 	return c.localAddr
 }
 
 // TODO: This might come in some environ var?
-func (c *Client) RemoteAddr() net.Addr {
+func (c *IOClient) RemoteAddr() net.Addr {
 	return c.remoteAddr
 }
 
 // TODO: Implement with select() or somehow else. At least they set a flag.
-func (c *Client) SetDeadline(t time.Time) error {
+func (c *IOClient) SetDeadline(t time.Time) error {
 	return nil
 }
 
-func (c *Client) SetReadDeadline(t time.Time) error {
+func (c *IOClient) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-func (c *Client) SetWriteDeadline(t time.Time) error {
+func (c *IOClient) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
 type Listener struct {
-	client *Client
+	client *IOClient
+	m      sync.Mutex
+	err    error
+}
+
+var errAccepted = errors.New("connection already accepted")
+
+func NewListener(c *IOClient) *Listener {
+	return &Listener{client: c}
 }
 
 func (l *Listener) Accept() (c net.Conn, err error) {
-	return net.Conn(l.client), nil
+	l.m.Lock()
+	defer l.m.Unlock()
+
+	if l.err == nil {
+		l.err = errAccepted
+		return net.Conn(l.client), nil
+	}
+	return nil, l.err
 }
 
 func (l *Listener) Close() error {
